@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Auto-Scaling EC2 infrastructure with CFN
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  VpcId:
+    Description: VPC Id where the resources will be created
+    Type: AWS::EC2::VPC::Id
+    ConstraintDescription: must be a valid VPC Id.
+  SubnetIds:
+    Description: Subnet Ids where the Auto Scaling Group will launch instances
+    Type: List<AWS::EC2::Subnet::Id>
+    ConstraintDescription: must be a list of valid Subnet Ids.
+  ImageId:
+    Description: AMI Id for the EC2 instances
+    Type: AWS::EC2::Image::Id
+    Default: ami-0157af9aea2eef346
+    ConstraintDescription: must be a valid AMI Id.
+  InstanceType:
+    Description: EC2 Instance Type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+    ConstraintDescription: must be a valid EC2 instance type.
+Resources:
+  EC2DefaultSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh to ec2
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  EC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: EC2LaunchTemplate
+      LaunchTemplateData:
+        ImageId: !Ref ImageId
+        KeyName: !Ref KeyName
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref EC2DefaultSecurityGroup
+        UserData: !Base64 |
+            #!/bin/bash
+            yum update -y
+            yum install -y stress
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref SubnetIds
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EC2LaunchTemplate
+        Version: !GetAtt EC2LaunchTemplate.LatestVersionNumber
+      MaxSize: '3'
+      MinSize: '1'
+      DesiredCapacity: '1'
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+  BasicCPUTargetTrackingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50.0
