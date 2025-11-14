@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to create an ECS cluster with Fargate service for watch-expense backend application
+
+Parameters:
+  ContainerImageURI:
+    Type: String
+    Description: URI for your container image
+    Default: 873335417993.dkr.ecr.us-east-1.amazonaws.com/mohits-ecr/watch-expense:latest
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC Id where ECS cluster and service will be deployed
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for the ECS service. Must be from the specified VPC.
+  DesiredTaskCount:
+    Type: Number
+    Description: Initial desired number of tasks
+  WatchExpenseSecretsArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret for Watch
+    Default: arn:aws:secretsmanager:us-east-1:873335417993:secret:watch-expense-backend-cjAARe
+
+Resources:
+  WatchExpenseECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Watch Expense ECS Service
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: "0.0.0.0/0"
+
+  WatchExpenseECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: watch-expense-cluster
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  SecretsAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref WatchExpenseSecretsArn
+
+  WatchExpenseECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - !Ref SecretsAccessPolicy
+      Path: /
+      RoleName: WatchExpenseECSTaskExecutionRole
+
+  WatchExpenseTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: watch-expense-task
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt WatchExpenseECSTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: watch-expense-backend-container
+          Essential: true
+          Image: !Ref ContainerImageURI
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+            Interval: 30
+            Retries: 3
+            StartPeriod: 60
+            Timeout: 10
+          Environment:
+            - Name: ENVIRONMENT
+              Value: production
+          Secrets:
+            - Name: MYSQL_DSN
+              ValueFrom: !Sub "${WatchExpenseSecretsArn}:MYSQL_DSN::"
+            - Name: JWT_SECRET
+              ValueFrom: !Sub "${WatchExpenseSecretsArn}:JWT_SECRET::"
+            - Name: JWT_AUDIENCE
+              ValueFrom: !Sub "${WatchExpenseSecretsArn}:JWT_AUDIENCE::"
+            - Name: JWT_ISSUER
+              ValueFrom: !Sub "${WatchExpenseSecretsArn}:JWT_ISSUER::"
+
+  WatchExpenseECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref WatchExpenseTaskDefinition
+      ServiceName: watch-expense-service
+      Cluster: !Ref WatchExpenseECSCluster
+      SchedulingStrategy: REPLICA
+      DesiredCount: !Ref DesiredTaskCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref WatchExpenseECSSecurityGroup
+          Subnets: !Ref Subnets
